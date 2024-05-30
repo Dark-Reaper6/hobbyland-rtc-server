@@ -1,0 +1,17 @@
+# Dependency directories
+/node_modules
+
+# Environment variables file (if you have one)
+.env
+
+# Compiled output
+/dist
+/out
+
+# Logs and other files created by node.js
+/logs
+*.log
+
+# OS-generated files
+.DS_Store
+Thumbs.db
