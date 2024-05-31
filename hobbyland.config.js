@@ -28,6 +28,10 @@ const userDocsTypes = ['id_card', 'passport', "driver_license", 'other'];
 
 const docsVerificStatuses = ["pending", "verified", "unverified"];
 
+const ipAddress = {
+    ip: '0.0.0.0',
+    announcedIp: process.env.APP_MODE === 'DEV' ? "127.0.0.1" : process.env.HOST,
+};
 const mediaCodecs = [
     {
         kind: 'audio',
@@ -41,15 +45,22 @@ const mediaCodecs = [
         clockRate: 90000,
         parameters: { 'x-google-start-bitrate': 1000 },
     },
-]
-const rtcMinPort = 10000;
-const rtcMaxPort = 12000;
+];
+const rtcPorts = {
+    min: 10000,
+    max: 12000
+}
+const rtcBitrates = {
+    initial: 1200000,
+    max: 1800000
+}
 
 module.exports = {
+    rtcPorts,
+    ipAddress,
     adminRoles,
     userLevels,
-    rtcMinPort,
-    rtcMaxPort,
+    rtcBitrates,
     mediaCodecs,
     jwtExpiries,
     messageTypes,
