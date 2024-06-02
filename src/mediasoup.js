@@ -1,8 +1,8 @@
 const mediasoup = require('mediasoup');
 const { ipAddress, rtcPorts, mediaCodecs, rtcBitrates } = require("../hobbyland.config");
 const store = require('./store');
-const User = require('../models/User');
-const Meeting = require('../models/Meeting');
+const User = require('./models/user');
+const Meeting = require('./models/meeting');
 const mongoose = require('mongoose');
 
 let worker;
@@ -13,7 +13,7 @@ let producers = {};
 let consumers = {};
 let consumersObjects = {};
 
-const init = async () => {
+const initMediasoupWorker = async () => {
     worker = await mediasoup.createWorker({
         rtcMinPort: rtcPorts.min,
         rtcMaxPort: rtcPorts.max,
@@ -78,7 +78,7 @@ async function createConsumer(producer, rtpCapabilities, consumerTransport) {
     };
 }
 
-const initSocket = (socket) => {
+const registerMediasoupEvents = (socket) => {
     socket.on('getRouterRtpCapabilities', (data, callback) => {
         callback(mediasoupRouter.rtpCapabilities);
     });
@@ -283,6 +283,6 @@ async function closeConsumer(consumer, socketID) {
 }
 
 module.exports = {
-    init,
-    initSocket,
+    initMediasoupWorker,
+    registerMediasoupEvents
 };

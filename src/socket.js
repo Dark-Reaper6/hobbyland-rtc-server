@@ -1,92 +1,96 @@
+const SocketIO = require('socket.io');
 const store = require('./store');
 const events = require('./events');
-const socketioJwt = require('socketio-jwt');
-const cors = require('cors');
-const router = require('./routes');
-const formidableMiddleware = require('express-formidable');
-const User = require('./models/User');
+const User = require('./models/user');
 const { AsyncNedb } = require('nedb-async');
-const mediasoup = require('./mediasoup');
+const { registerMediasoupEvents } = require('./mediasoup');
 const Meeting = require('./models/meeting');
 
-module.exports = () => {
+module.exports = async (server) => {
     store.rooms = new AsyncNedb();
     store.peers = new AsyncNedb();
     store.onlineUsers = new Map();
-    store.io.sockets.on(
-            'connection',
-            socketioJwt.authorize({
-                secret: store.config.secret,
-                timeout: 15000, // 15 seconds to send the authentication message
-            }),
-        )
-        .on('authenticated', (socket) => {
-            const { email, id } = socket.decoded_token;
-            console.log(`Socket connected: ${email}`.cyan);
 
-            mediasoup.initSocket(socket);
+    store.io = SocketIO(server, {
+        cors: { origin: allowedOrigins }
+    });
 
-            socket.join(id);
+    store.io.use(async (socket, next) => {
+        await ConnectDB(false);
+        const authError = () => { console.log("Socket handshake authentication error"); next(new Error('Authentication error')); }
+        if (!socket?.handshake?.query?.token) return authError();
+        jwt.verify(socket.handshake.query.token, process.env.APP_SECRET_KEY, (err, decoded) => {
+            if (err || !validate(decoded.session_id)) return authError();
+            socket.user = decoded;
+            socket.id = decoded.session_id;
+            console.log("A candidate just authenticated with id: " + socket.id)
+            next();
+        });
+    });
 
-            events.forEach((event) => socket.on(event.tag, (data) => event.callback(socket, data)));
+    store.io.on('connection', async (socket) => {
+        const { user } = socket;
+        console.log(`Socket connected: ${user.email}`);
 
-            store.socketIds.push(socket.id);
-            store.sockets[socket.id] = socket;
+        registerMediasoupEvents(socket);
 
-            if (!store.socketsByUserID[id]) store.socketsByUserID[id] = [];
-            store.socketsByUserID[id].push(socket);
-            store.userIDsBySocketID[socket.id] = id;
+        socket.join(user.id);
 
-            store.onlineUsers.set(socket, { id, status: 'online' });
-            store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
+        events.forEach((event) => socket.on(event.tag, (data) => event.callback(socket, data)));
 
-            socket.on('unauthorized', (error, callback) => {
-                console.log('Unauthorized user attempt.');
-                if (error.data.type === 'UnauthorizedError' || error.data.code === 'invalid_token') {
-                    // redirect user to login page perhaps or execute callback:
-                    callback();
-                    console.log('User token has expired');
-                }
-            });
+        store.socketIds.push(socket.id);
+        store.sockets[socket.id] = socket;
 
-            const removeSocket = (array, element) => {
-                let result = [...array];
-                let i = 0;
-                let found = false;
-                while (i < result.length && !found) {
-                    if (element.id === array[i].id) {
-                        result.splice(i, 1);
-                        found = true;
-                    }
-                    i++;
-                }
-                return result;
-            };
+        if (!store.socketsByUserID[user.id]) store.socketsByUserID[user.id] = [];
+        store.socketsByUserID[user.id].push(socket);
+        store.userIDsBySocketID[socket.id] = user.id;
 
-            socket.on('disconnect', () => {
-                if (store.roomIDs[socket.id]) {
-                    let roomID = store.roomIDs[socket.id];
-                    store.consumerUserIDs[roomID].splice(store.consumerUserIDs[roomID].indexOf(socket.id), 1);
-                    socket.to(roomID).emit('consumers', { content: store.consumerUserIDs[roomID], timestamp: Date.now() });
-                    socket.to(roomID).emit('leave', { socketID: socket.id });
-                }
+        store.onlineUsers.set(socket, { id: user.id, status: 'online' });
+        store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
 
-                Meeting.update({}, { $pull: { peers: socket.id } }, { multi: true });
-
-                store.peers.remove({ socketID: socket.id }, { multi: true });
-                console.log(`Socket disconnected: ${email}`.cyan);
-                store.socketIds.splice(store.socketIds.indexOf(socket.id), 1);
-                store.sockets[socket.id] = undefined;
-                store.socketsByUserID[id] = removeSocket(store.socketsByUserID[id], socket);
-                User.findOneAndUpdate({ _id: id }, { $set: { lastOnline: Date.now() } })
-                    .then(() => console.log('last online ' + id))
-                    .catch((err) => console.log(err));
-                store.onlineUsers.delete(socket);
-                store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
-            });
+        socket.on('unauthorized', (error, callback) => {
+            console.log('Unauthorized user attempt.');
+            if (error.data.type === 'UnauthorizedError' || error.data.code === 'invalid_token') {
+                // redirect user to login page perhaps or execute callback:
+                callback();
+                console.log('User token has expired');
+            }
         });
 
-    store.app.use(cors());
-    store.app.use(formidableMiddleware());
-    store.app.use('/api', router);
+        const removeSocket = (array, element) => {
+            let result = [...array];
+            let i = 0;
+            let found = false;
+            while (i < result.length && !found) {
+                if (element.id === array[i].user.id) {
+                    result.splice(i, 1);
+                    found = true;
+                }
+                i++;
+            }
+            return result;
+        };
+
+        socket.on('disconnect', () => {
+            if (store.roomIDs[socket.id]) {
+                let roomID = store.roomIDs[socket.id];
+                store.consumerUserIDs[roomID].splice(store.consumerUserIDs[roomID].indexOf(socket.id), 1);
+                socket.to(roomID).emit('consumers', { content: store.consumerUserIDs[roomID], timestamp: Date.now() });
+                socket.to(roomID).emit('leave', { socketID: socket.id });
+            }
+
+            Meeting.update({}, { $pull: { peers: socket.id } }, { multi: true });
+
+            store.peers.remove({ socketID: socket.id }, { multi: true });
+            console.log(`Socket disconnected: ${user.email}`);
+            store.socketIds.splice(store.socketIds.indexOf(socket.id), 1);
+            store.sockets[socket.id] = undefined;
+            store.socketsByUserID[user.id] = removeSocket(store.socketsByUserID[user.id], socket);
+            User.findOneAndUpdate({ _id: user.id }, { $set: { lastOnline: Date.now() } })
+                .then(() => console.log('last online ' + user.id))
+                .catch((err) => console.log(err));
+            store.onlineUsers.delete(socket);
+            store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
+        });
+    });
 };

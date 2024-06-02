@@ -1,20 +1,25 @@
 require("dotenv").config();
+const http = require('http');
 const express = require('express');
 const { ConnectDB } = require("./lib/database")
-const app = express();
-const http = require('http');
-const io = require('socket.io');
+const { initMediasoupWorker } = require('./src/mediasoup');
 const store = require('./src/store');
 const initSocket = require('./src/socket');
-const mediasoup = require('./src/mediasoup');
 const Config = require('./config');
+const cors = require('cors');
+const router = require('./routes');
+const formidableMiddleware = require('express-formidable');
 
-const server = http.createServer(app);
-store.app = app;
+const expressServer = new express();
+const server = http.createServer(expressServer);
+store.app = expressServer;
 store.config = Config;
-store.io = io(server);
-initSocket();
-mediasoup.init();
+initSocket(server);
+initMediasoupWorker();
+
+store.app.use(cors());
+store.app.use(formidableMiddleware());
+store.app.use('/api', router);
 
 const listen = () => server.listen(process.env.PORT, async () => {
   console.log(`Server listening on port ${process.env.PORT}`)
