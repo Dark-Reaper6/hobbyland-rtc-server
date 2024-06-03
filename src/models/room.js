@@ -12,4 +12,4 @@ const RoomSchema = new mongoose.Schema({
   last_message: { type: mongoose.Schema.Types.ObjectId, ref: 'Message' },
 }, { timestamps: true });
 
-module.exports = mongoose.model('Room', RoomSchema);
+module.exports = mongoose.models.Room || mongoose.model('Room', RoomSchema);

@@ -1,10 +1,11 @@
 const SocketIO = require('socket.io');
-const store = require('./store');
-const events = require('./events');
 const User = require('./models/user');
+const Meeting = require('./models/meeting');
+const events = require('./events');
+const store = require('./store');
 const { AsyncNedb } = require('nedb-async');
 const { registerMediasoupEvents } = require('./mediasoup');
-const Meeting = require('./models/meeting');
+const { allowedOrigins } = require('../hobbyland.config');
 
 module.exports = async (server) => {
     store.rooms = new AsyncNedb();

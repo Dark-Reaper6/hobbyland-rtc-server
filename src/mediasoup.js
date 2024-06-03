@@ -26,7 +26,7 @@ const initMediasoupWorker = async () => {
     });
 
     mediasoupRouter = await worker.createRouter({ mediaCodecs });
-    console.log('mediasoup worker initiated.');
+    console.log('✅ Mediasoup worker initiated.');
 };
 
 const createWebRtcTransport = async () => {

@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const { ObjectId } = mongoose.Schema.Types;
 
-const MeetingSchema = new Schema({
+const MeetingSchema = new mongoose.Schema({
     title: {
         type: String,
         required: false,
