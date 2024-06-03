@@ -1,9 +1,9 @@
-const mediasoup = require('mediasoup');
+const { createWorker } = require('mediasoup');
 const { ipAddress, rtcPorts, mediaCodecs, rtcBitrates } = require("../hobbyland.config");
 const store = require('./store');
 const User = require('./models/user');
 const Meeting = require('./models/meeting');
-const mongoose = require('mongoose');
+const { ObjectId } = require('mongoose').Types;
 
 let worker;
 let mediasoupRouter;
@@ -14,7 +14,7 @@ let consumers = {};
 let consumersObjects = {};
 
 const initMediasoupWorker = async () => {
-    worker = await mediasoup.createWorker({
+    worker = await createWorker({
         rtcMinPort: rtcPorts.min,
         rtcMaxPort: rtcPorts.max,
         logLevel: "warn",
@@ -44,7 +44,7 @@ const createWebRtcTransport = async () => {
             id: transport.id,
             iceParameters: transport.iceParameters,
             iceCandidates: transport.iceCandidates,
-            dtlsParameters: transport.dtlsParameters,
+            dtlsParameters: transport.dtlsParameters
         }
     };
 }
@@ -206,7 +206,7 @@ const registerMediasoupEvents = (socket) => {
             {
                 lastEnter: Date.now(),
                 $push: { peers: socket.id },
-                $addToSet: { users: mongoose.Types.ObjectId(socket.decoded_token.id) },
+                $addToSet: { users: ObjectId(socket.decoded_token.id) },
             },
         )
             .then((meeting) => {
@@ -267,19 +267,13 @@ const registerMediasoupEvents = (socket) => {
 };
 
 async function closeProducer(producer, socketID) {
-    try {
-        await producers[socketID][producer.id].close();
-    } catch (e) {
-        console.log(e);
-    }
+    try { await producers[socketID][producer.id].close() }
+    catch (e) { console.log(e) }
 }
 
 async function closeConsumer(consumer, socketID) {
-    try {
-        await consumers[socketID][consumer.id].close();
-    } catch (e) {
-        console.log(e);
-    }
+    try { await consumers[socketID][consumer.id].close() }
+    catch (e) { console.log(e); }
 }
 
 module.exports = {
