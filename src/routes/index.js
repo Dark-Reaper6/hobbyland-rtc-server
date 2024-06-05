@@ -1,14 +1,10 @@
 const router = require('express').Router();
-const { AddUser, GetPeers, JoinUser } = require("./rtc");
-const { GetMeetings, CallMeeting, AnswerMeeting, CreateMeeting, EndMeeting, AddUserToMeeting } = require("./meeting");
-
-// router.get('/images/:id', require('./images'));
-// router.get('/files/:id', require('./files'));
-// router.get('/images/:id/:size', require('./images'));
+const { AddUser, GetPeers, JoinUser } = require("../controllers/rtc");
+const { GetMeetings, CallMeeting, AnswerMeeting, CreateMeeting, EndMeeting, AddUserToMeeting } = require("../controllers/meeting");
 
 router.post('/rtc/create', AddUser);
-router.post('/rtc/join', GetPeers);
-router.post('/rtc/peers', JoinUser);
+router.post('/rtc/join', JoinUser);
+router.post('/rtc/get-peers', GetPeers);
 
 router.post('/meeting/create', CreateMeeting);
 router.post('/meeting/call', CallMeeting);

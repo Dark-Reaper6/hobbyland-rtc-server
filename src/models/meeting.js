@@ -11,7 +11,7 @@ const MeetingSchema = new mongoose.Schema({
         type: Date,
         default: Date.now,
     },
-    lastEnter: {
+    last_enter: {
         type: Date,
         default: Date.now,
     },
@@ -19,13 +19,13 @@ const MeetingSchema = new mongoose.Schema({
         type: Date,
         default: Date.now,
     },
-    startedAsCall: {
+    started_as_call: {
         type: Boolean,
         default: false,
     },
     caller: { type: ObjectId, ref: 'users' },
     callee: { type: ObjectId, ref: 'users' },
-    callToGroup: {
+    group_call: {
         type: Boolean,
         default: false,
     },

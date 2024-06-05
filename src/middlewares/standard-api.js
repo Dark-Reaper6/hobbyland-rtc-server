@@ -1,8 +1,9 @@
 const Admin = require("../models/admin");
 const { isValidObjectId } = require("mongoose");
 const { sendAdminNotification } = require("../../lib/send-notification");
-const { verify, decode } = require("jsonwebtoken");
+const { verify } = require("jsonwebtoken");
 const { adminRoles } = require("../../hobbyland.config");
+const { validate } = require('uuid')
 
 module.exports = async function StandardApi(req, res, next, { verify_user = true, verify_admin = false, validationSchema = null } = {}) {
     let nextHandler = null;
@@ -12,8 +13,7 @@ module.exports = async function StandardApi(req, res, next, { verify_user = true
             const { "session-token": sessionToken } = req.cookies;
             if (!sessionToken) throw new Error("invalid session token");
             const decodedToken = verify(sessionToken, process.env.APP_SECRET_KEY);
-            if (!isValidObjectId(decodedToken._id)) throw new Error("invalid session token");
-            // if (decode(decodedToken.user_agent) !== req.headers['user-agent']) throw new Error("invalid session token"); // Currently disabled due to testing in different divices.S
+            if (!isValidObjectId(decodedToken._id) || !validate(decodedToken.session_id)) throw new Error("invalid session token");
             if (verify_admin) {
                 let admin = await Admin.findById(decodedToken._id);
                 if (!admin || !adminRoles.includes(admin.role)) throw new Error("invalid session token");

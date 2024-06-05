@@ -1,40 +1,32 @@
+const Room = require("../models/room");
 const Meeting = require('../models/meeting');
-const Room = require('../models/room');
 const User = require('../models/user');
+const StandardApi = require("../middlewares/standard-api");
 const xss = require('xss');
 const store = require('../store');
 
-const AnswerMeeting = (req, res) => {
-    let { userID, meetingID, answer } = req.fields;
-
-    store.io.to(userID).emit('answer', { status: 200, meetingID, answer, callee: req.user.id });
-
-    res.status(200).json({ ok: true });
-};
-
-const CreateMeeting = (req, res) => {
-    let { title, caller, callee, startedAsCall, callToGroup, group } = req.fields;
-
-    Meeting({ title: xss(title), caller, callee, startedAsCall, callToGroup, group })
-        .save()
-        .then((meeting) => {
-            res.status(200).json(meeting);
-        });
-};
-
-const AddUserToMeeting = async (req, res) => {
-    let { userID, meetingID } = req.fields;
-
-    const user = await User.findOne({ _id: req.user.id }, { email: 0, password: 0, friends: 0, __v: 0 }).populate([
-        { path: 'picture', strictPopulate: false },
-    ]);
-
-    store.io
-        .to(userID)
-        .emit('call', { status: 200, meetingID, roomID: null, caller: req.user.id, counterpart: user, added: true });
+const AnswerMeeting = async (req, res) => StandardApi(req, res, async () => {
+    let { user_id, meeting_id, answer } = req.body;
+    store.io.to(user_id).emit('answer', { status: 200, meeting_id, answer, callee: req.user._id });
 
     res.status(200).json({ ok: true });
-};
+});
+
+const CreateMeeting = async (req, res) => StandardApi(req, res, async () => {
+    let { title, caller, callee, started_as_call, group_call, group } = req.body;
+
+    const meeting = (await Meeting.create({ title: xss(title), caller, callee, started_as_call, group_call, group })).toObject();
+    res.json({ success: true, msg: "Meeting created successfully.", meeting })
+});
+
+const AddUserToMeeting = async (req, res) => StandardApi(req, res, async () => {
+    let { user_id, meeting_id } = req.body;
+
+    const user = await User.findById(req.user.id).lean();
+    store.io.to(user_id).emit('call', { status: 200, meeting_id, roomID: null, caller: req.user.id, counterpart: user, added: true });
+
+    res.status(200).json({ ok: true });
+});
 
 const GetMeetings = (req, res) => {
     let { limit } = req.fields;

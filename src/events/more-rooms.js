@@ -1,4 +1,4 @@
-const Room = require('../models/Room');
+const Room = require('../models/room');
 
 module.exports = (socket, data) => {
   console.log('Received join room event', JSON.stringify(data));
