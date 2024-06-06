@@ -24,11 +24,10 @@ const AddUserToMeeting = async (req, res) => StandardApi(req, res, async () => {
 
     const user = await User.findById(req.user.id).lean();
     store.io.to(user_id).emit('call', { status: 200, meeting_id, roomID: null, caller: req.user.id, counterpart: user, added: true });
-
     res.status(200).json({ ok: true });
 });
 
-const GetMeetings = (req, res) => {
+const GetMeetings = async (req, res) => StandardApi(req, res, async () => {
     let { limit } = req.fields;
 
     !limit && (limit = 30);
@@ -52,16 +51,16 @@ const GetMeetings = (req, res) => {
             if (err) return res.status(500).json({ error: true });
             res.status(200).json({ limit, meetings });
         });
-};
+});
 
-const CallMeeting = async (req, res) => {
-    let { roomID, meetingID } = req.fields;
+const CallMeeting = async (req, res) => StandardApi(req, res, async () => {
+    let { room_id, meeting_id } = req.fields;
 
     const user = await User.findOne({ _id: req.user.id }, { email: 0, password: 0, friends: 0, __v: 0 }).populate([
         { path: 'picture', strictPopulate: false },
     ]);
 
-    Room.findOne({ _id: roomID })
+    Room.findOne({ _id: room_id })
         .populate({
             path: 'people',
             select: '-email -password -friends -__v',
@@ -79,7 +78,7 @@ const CallMeeting = async (req, res) => {
                 if (personUserID !== myUserID) {
                     store.io
                         .to(personUserID)
-                        .emit('call', { status: 200, room, meetingID, roomID, caller: req.user.id, counterpart: user });
+                        .emit('call', { status: 200, room, meeting_id, room_id, caller: req.user.id, counterpart: user });
                 }
             });
 
@@ -89,13 +88,13 @@ const CallMeeting = async (req, res) => {
             console.log(err);
             return res.status(500).json({ error: true });
         });
-};
+});
 
-const EndMeeting = (req, res, next) => {
-    let { userID, meetingID } = req.fields;
-    store.io.to(userID).emit('close', { status: 200, meetingID, counterpart: req.user.id });
+const EndMeeting = async (req, res) => StandardApi(req, res, async () => {
+    let { user_id, meeting_id } = req.body;
+    store.io.to(user_id).emit('close', { status: 200, meeting_id, counterpart: req.user._id });
     res.status(200).json({ ok: true });
-};
+});
 
 module.exports = {
     EndMeeting,
