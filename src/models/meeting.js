@@ -15,7 +15,7 @@ const MeetingSchema = new mongoose.Schema({
         type: Date,
         default: Date.now,
     },
-    lastLeave: {
+    last_leave: {
         type: Date,
         default: Date.now,
     },

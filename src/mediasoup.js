@@ -7,11 +7,11 @@ const { ObjectId } = require('mongoose').Types;
 
 let worker;
 let mediasoupRouter;
-let producerTransports = {};
-let consumerTransports = {};
-let producers = {};
-let consumers = {};
-let consumersObjects = {};
+let producerTransports = new Map();
+let consumerTransports = new Map();
+let producers = new Map();
+let consumers = new Map();
+let consumersObjects = new Map();
 
 const initMediasoupWorker = async () => {
     worker = await createWorker({
@@ -53,7 +53,7 @@ async function createConsumer(producer, rtpCapabilities, consumerTransport) {
     if (!mediasoupRouter.canConsume({
         producerId: producer.id,
         rtpCapabilities,
-    })) return console.error('can not consume');
+    })) return console.error('cannot consume');
     let consumer;
     try {
         consumer = await consumerTransport.consume({
@@ -79,14 +79,14 @@ async function createConsumer(producer, rtpCapabilities, consumerTransport) {
 }
 
 const registerMediasoupEvents = (socket) => {
-    socket.on('getRouterRtpCapabilities', (data, callback) => {
+    socket.on('get-router-rtp-capabilities', (data, callback) => {
         callback(mediasoupRouter.rtpCapabilities);
     });
 
-    socket.on('createProducerTransport', async (data, callback) => {
+    socket.on('create-producer-transport', async (data, callback) => {
         try {
             const { transport, params } = await createWebRtcTransport();
-            producerTransports[socket.id] = transport;
+            producerTransports.set(socket.id, transport);
             callback(params);
         } catch (err) {
             console.error(err);
@@ -94,10 +94,10 @@ const registerMediasoupEvents = (socket) => {
         }
     });
 
-    socket.on('createConsumerTransport', async (data, callback) => {
+    socket.on('create-consumer-transport', async (data, callback) => {
         try {
             const { transport, params } = await createWebRtcTransport();
-            consumerTransports[socket.id] = transport;
+            consumerTransports.set(socket.id, transport);
             callback(params);
         } catch (err) {
             console.error(err);
@@ -105,176 +105,208 @@ const registerMediasoupEvents = (socket) => {
         }
     });
 
-    socket.on('connectProducerTransport', async (data, callback) => {
-        await producerTransports[socket.id].connect({ dtlsParameters: data.dtlsParameters });
-        callback();
+    socket.on('connect-producer-transport', async (data, callback) => {
+        const transport = producerTransports.get(socket.id);
+        if (transport) {
+            await transport.connect({ dtlsParameters: data.dtlsParameters });
+            callback();
+        } else {
+            callback({ error: 'Transport not found' });
+        }
     });
 
-    socket.on('connectConsumerTransport', async (data, callback) => {
-        await consumerTransports[socket.id].connect({ dtlsParameters: data.dtlsParameters });
-        callback();
+    socket.on('connect-consumer-transport', async (data, callback) => {
+        const transport = consumerTransports.get(socket.id);
+        if (transport) {
+            await transport.connect({ dtlsParameters: data.dtlsParameters });
+            callback();
+        } else { callback({ error: 'Transport not found' }) }
     });
 
     socket.on('produce', async (data, callback) => {
-        const { kind, rtpParameters, isScreen } = data;
-        let producer = await producerTransports[socket.id].produce({ kind, rtpParameters });
+        try {
+            const { kind, rtpParameters, isScreen, roomID } = data;
+            const transport = producerTransports.get(socket.id);
+            if (!transport) throw new Error('Transport not found');
 
-        producer.on('transportclose', () => {
-            console.log("producer's transport closed", producer.id);
-            closeProducer(producer, socket.id);
-        });
-        producer.observer.on('close', () => {
-            console.log('producer closed', producer.id);
-            closeProducer(producer, socket.id);
-        });
+            const producer = await transport.produce({ kind, rtpParameters });
+            producer.on('transportclose', () => {
+                closeProducer(producer, socket.id);
+            });
+            producer.observer.on('close', () => {
+                closeProducer(producer, socket.id);
+            });
 
-        await store.peers.asyncInsert({
-            type: 'producer',
-            socketID: socket.id,
-            userID: socket.decoded_token.id,
-            roomID: data.roomID || 'general',
-            producerID: producer.id,
-            isScreen,
-        });
+            await store.peers.asyncInsert({
+                type: 'producer',
+                socketID: socket.id,
+                userID: socket.user.id,
+                roomID: roomID || 'general',
+                producerID: producer.id,
+                isScreen,
+            });
 
-        !producers[socket.id] && (producers[socket.id] = {});
-        producers[socket.id][producer.id] = producer;
+            if (!producers.has(socket.id)) producers.set(socket.id, new Map());
+            producers.get(socket.id).set(producer.id, producer);
 
-        socket
-            .to(data.roomID)
-            .emit('newProducer', {
-                userID: socket.decoded_token.id,
-                roomID: data.roomID || 'general',
+            socket.to(roomID).emit('newProducer', {
+                userID: socket.user.id,
+                roomID: roomID || 'general',
                 socketID: socket.id,
                 producerID: producer.id,
                 isScreen,
             });
 
-        callback({ id: producer.id });
+            callback({ id: producer.id });
+        } catch (err) {
+            console.error(err);
+            callback({ error: err.message });
+        }
     });
 
     socket.on('consume', async (data, callback) => {
-        const obj = await createConsumer(
-            producers[data.socketID][data.producerID],
-            data.rtpCapabilities,
-            consumerTransports[socket.id],
-        );
+        try {
+            const { producerID, rtpCapabilities, roomID } = data;
+            const transport = consumerTransports.get(socket.id);
+            if (!transport) throw new Error('Transport not found');
 
-        obj.consumer.on('transportclose', () => {
-            closeConsumer(obj.consumer, socket.id);
-        });
-        obj.consumer.on('producerclose', () => {
-            closeConsumer(obj.consumer, socket.id);
-        });
+            const producer = producers.get(data.socketID)?.get(producerID);
+            if (!producer) throw new Error('Producer not found');
 
-        !consumers[socket.id] && (consumers[socket.id] = {});
-        consumers[socket.id][data.producerID] = obj.consumer;
-        callback(obj.response);
+            const { consumer, params } = await createConsumer(producer, rtpCapabilities, transport);
+
+            consumer.on('transportclose', () => {
+                closeConsumer(consumer, socket.id);
+            });
+            consumer.on('producerclose', () => {
+                closeConsumer(consumer, socket.id);
+            });
+
+            if (!consumers.has(socket.id)) consumers.set(socket.id, new Map());
+            consumers.get(socket.id).set(producerID, consumer);
+
+            callback(params);
+        } catch (err) {
+            console.error(err);
+            callback({ error: err.message });
+        }
     });
 
     socket.on('resume', async (data, callback) => {
-        await consumers[socket.id][data.producerID].resume();
-        callback();
+        const consumer = consumers.get(socket.id)?.get(data.producerID);
+        if (consumer) {
+            await consumer.resume();
+            callback();
+        } else {
+            callback({ error: 'Consumer not found' });
+        }
     });
 
-    socket.on('create', async (data, callback) => {
-        const room = await store.rooms.asyncInsert({ lastJoin: Date.now() });
-        callback(room);
-    });
+    socket.on('join-meeting', async (data, callback) => {
+        try {
+            const { room_id } = data;
 
-    socket.on('join', async (data, callback) => {
-        const user = await User.findOne({ _id: socket.decoded_token.id }, { password: 0 }).populate([
-            { path: 'picture', strictPopulate: false },
-        ]);
-        socket.to(data.roomID).emit('newPeer', { userID: socket.decoded_token.id, socketID: socket.id, user });
-        consumersObjects[data.roomID] = {
-            ...(consumersObjects[data.roomID] || {}),
-            [socket.id]: { userID: socket.decoded_token.id, socketID: socket.id, user },
-        };
+            socket.join(room_id);
+            consumersObjects.set(room_id, {
+                ...consumersObjects.get(room_id),
+                [socket.id]: socket.user
+            });
 
-        await socket.join(data.roomID || 'general');
-        if (data.roomID) await store.rooms.asyncUpdate({ _id: data.roomID }, { $set: { lastJoin: Date.now() } });
-        const peers = await store.peers.asyncFind({ type: 'producer', roomID: data.roomID || 'general' });
+            const peers = await store.peers.asyncFind({ type: 'producer', room_id: room_id || 'general' });
 
-        if (!store.consumerUserIDs[data.roomID]) store.consumerUserIDs[data.roomID] = [];
-        store.consumerUserIDs[data.roomID].push(socket.id);
+            if (!store.consumerUserIDs[room_id]) store.consumerUserIDs[room_id] = [];
+            store.consumerUserIDs[room_id].push(socket.id);
 
-        socket.to(data.roomID).emit('consumers', { content: store.consumerUserIDs[data.roomID], timestamp: Date.now() });
+            socket.to(room_id).emit('newPeer', socket.user);
+            socket.to(room_id).emit('consumers', { content: store.consumerUserIDs[room_id], timestamp: Date.now() });
 
-        await Meeting.findOneAndUpdate(
-            { _id: data.roomID },
-            {
-                lastEnter: Date.now(),
+            await Meeting.findByIdAndUpdate(room_id, {
+                last_enter: Date.now(),
                 $push: { peers: socket.id },
-                $addToSet: { users: ObjectId(socket.decoded_token.id) },
-            },
-        )
-            .then((meeting) => {
-                meeting.users.forEach((user) => {
-                    socket.to(user).emit('refresh-meetings', { timestamp: Date.now() });
-                });
-            })
-            .catch((err) => console.log(err));
+                $push: { users: socket.user.id },
+            });
 
-        store.roomIDs[socket.id] = data.roomID;
+            store.roomIDs[socket.id] = room_id;
+            // store.onlineUsers.delete(socket);
+            // store.onlineUsers.set(socket, { id: socket.user.id, status: 'busy' });
+            // store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
 
-        store.onlineUsers.delete(socket);
-        store.onlineUsers.set(socket, { id: socket.decoded_token.id, status: 'busy' });
-        store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
-
-        callback({
-            producers: peers,
-            consumers: { content: store.consumerUserIDs[data.roomID], timestamp: Date.now() },
-            peers: consumersObjects[data.roomID],
-        });
+            callback({
+                producers: peers,
+                consumers: { content: store.consumerUserIDs[room_id], timestamp: Date.now() },
+                peers: consumersObjects.get(room_id),
+            });
+        } catch (err) {
+            console.error(err);
+            callback({ error: err.message });
+        }
     });
 
     socket.on('leave', async (data, callback) => {
-        await socket.leave(data.roomID || 'general');
-        await store.peers.asyncRemove({ socketID: socket.id }, { multi: true });
-        store.io.to(data.roomID || 'general').emit('leave', { socketID: socket.id });
-        if (producerTransports[socket.id]) producerTransports[socket.id].close();
-        if (consumerTransports[socket.id]) consumerTransports[socket.id].close();
+        try {
+            const { roomID } = data;
+            socket.leave(roomID || 'general');
+            await store.peers.asyncRemove({ socketID: socket.id }, { multi: true });
 
-        store.roomIDs[socket.id] = null;
+            store.io.to(roomID || 'general').emit('leave', { socketID: socket.id });
 
-        await Meeting.findOneAndUpdate({ _id: data.roomID }, { lastLeave: Date.now(), $pull: { peers: socket.id } })
-            .then((meeting) => {
-                (meeting.users || []).forEach((user) => {
-                    socket.to(user).emit('refresh-meetings', { timestamp: Date.now() });
-                });
-            })
-            .catch((err) => console.log(err));
+            if (producerTransports.has(socket.id)) producerTransports.get(socket.id).close();
+            if (consumerTransports.has(socket.id)) consumerTransports.get(socket.id).close();
 
-        if (store.consumerUserIDs[data.roomID])
-            store.consumerUserIDs[data.roomID].splice(store.consumerUserIDs[data.roomID].indexOf(socket.id), 1);
-        socket.to(data.roomID).emit('consumers', { content: store.consumerUserIDs[data.roomID], timestamp: Date.now() });
+            store.roomIDs[socket.id] = null;
 
-        socket.to(data.roomID).emit('leave', { socketID: socket.id });
+            await Meeting.findOneAndUpdate(
+                { _id: roomID },
+                { lastLeave: Date.now(), $pull: { peers: socket.id } }
+            );
 
-        store.onlineUsers.delete(socket);
-        store.onlineUsers.set(socket, { id: socket.decoded_token.id, status: 'online' });
-        store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
+            if (store.consumerUserIDs[roomID])
+                store.consumerUserIDs[roomID].splice(store.consumerUserIDs[roomID].indexOf(socket.id), 1);
 
-        if (callback) callback();
+            socket.to(roomID).emit('consumers', { content: store.consumerUserIDs[roomID], timestamp: Date.now() });
+            socket.to(roomID).emit('leave', { socketID: socket.id });
+
+            store.onlineUsers.delete(socket);
+            store.onlineUsers.set(socket, { id: socket.user.id, status: 'online' });
+            store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
+
+            callback();
+        } catch (err) {
+            console.error(err);
+            if (callback) callback({ error: err.message });
+        }
     });
 
     socket.on('remove', async (data, callback) => {
-        await store.peers.asyncRemove({ producerID: data.producerID }, { multi: true });
-        store.io.to(data.roomID || 'general').emit('remove', { producerID: data.producerID, socketID: socket.id });
-        callback();
+        try {
+            await store.peers.asyncRemove({ producerID: data.producerID }, { multi: true });
+            store.io.to(data.roomID || 'general').emit('remove', { producerID: data.producerID, socketID: socket.id });
+            callback();
+        } catch (err) {
+            console.error(err);
+            callback({ error: err.message });
+        }
     });
+
+    socket.on("testing-event", (_, callback) => {
+        console.log("Yooo the promisified version of the socket io works like hell!!")
+        callback({
+            some: "kind of string here"
+        });
+    })
 };
 
-async function closeProducer(producer, socketID) {
-    try { await producers[socketID][producer.id].close() }
-    catch (e) { console.log(e) }
-}
+const closeProducer = (producer, socketId) => {
+    producer.close();
+    producers.get(socketId)?.delete(producer.id);
+    if (producers.get(socketId)?.size === 0) producers.delete(socketId);
+};
 
-async function closeConsumer(consumer, socketID) {
-    try { await consumers[socketID][consumer.id].close() }
-    catch (e) { console.log(e); }
-}
+const closeConsumer = (consumer, socketId) => {
+    consumer.close();
+    consumers.get(socketId)?.delete(consumer.id);
+    if (consumers.get(socketId)?.size === 0) consumers.delete(socketId);
+};
 
 module.exports = {
     initMediasoupWorker,
