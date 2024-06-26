@@ -79,11 +79,11 @@ async function createConsumer(producer, rtpCapabilities, consumerTransport) {
 }
 
 const registerMediasoupEvents = (socket) => {
-    socket.on('get-router-rtp-capabilities', (data, callback) => {
+    socket.on('get-router-rtp-capabilities', (_, callback) => {
         callback(mediasoupRouter.rtpCapabilities);
     });
 
-    socket.on('create-producer-transport', async (data, callback) => {
+    socket.on('create-producer-transport', async (_, callback) => {
         try {
             const { transport, params } = await createWebRtcTransport();
             producerTransports.set(socket.id, transport);
@@ -94,7 +94,7 @@ const registerMediasoupEvents = (socket) => {
         }
     });
 
-    socket.on('create-consumer-transport', async (data, callback) => {
+    socket.on('create-consumer-transport', async (_, callback) => {
         try {
             const { transport, params } = await createWebRtcTransport();
             consumerTransports.set(socket.id, transport);
@@ -105,10 +105,10 @@ const registerMediasoupEvents = (socket) => {
         }
     });
 
-    socket.on('connect-producer-transport', async (data, callback) => {
+    socket.on('connect-producer-transport', async ({ dtlsParameters }, callback) => {
         const transport = producerTransports.get(socket.id);
         if (transport) {
-            await transport.connect({ dtlsParameters: data.dtlsParameters });
+            await transport.connect({ dtlsParameters });
             callback();
         } else {
             callback({ error: 'Transport not found' });
@@ -123,25 +123,20 @@ const registerMediasoupEvents = (socket) => {
         } else { callback({ error: 'Transport not found' }) }
     });
 
-    socket.on('produce', async (data, callback) => {
+    socket.on('produce', async ({ kind, rtpParameters, isScreen, room_id }, callback) => {
         try {
-            const { kind, rtpParameters, isScreen, roomID } = data;
             const transport = producerTransports.get(socket.id);
             if (!transport) throw new Error('Transport not found');
 
             const producer = await transport.produce({ kind, rtpParameters });
-            producer.on('transportclose', () => {
-                closeProducer(producer, socket.id);
-            });
-            producer.observer.on('close', () => {
-                closeProducer(producer, socket.id);
-            });
+            producer.on('transportclose', () => closeProducer(producer, socket.id));
+            producer.observer.on('close', () => closeProducer(producer, socket.id));
 
             await store.peers.asyncInsert({
                 type: 'producer',
                 socketID: socket.id,
                 userID: socket.user.id,
-                roomID: roomID || 'general',
+                room_id,
                 producerID: producer.id,
                 isScreen,
             });
@@ -149,14 +144,13 @@ const registerMediasoupEvents = (socket) => {
             if (!producers.has(socket.id)) producers.set(socket.id, new Map());
             producers.get(socket.id).set(producer.id, producer);
 
-            socket.to(roomID).emit('newProducer', {
-                userID: socket.user.id,
-                roomID: roomID || 'general',
+            socket.to(room_id).emit('new-producer', {
+                room_id,
                 socketID: socket.id,
+                userID: socket.user.id,
                 producerID: producer.id,
                 isScreen,
             });
-
             callback({ id: producer.id });
         } catch (err) {
             console.error(err);
@@ -164,26 +158,21 @@ const registerMediasoupEvents = (socket) => {
         }
     });
 
-    socket.on('consume', async (data, callback) => {
+    socket.on('consume', async ({ producer_id, rtpCapabilities, socket_id }, callback) => {
         try {
-            const { producerID, rtpCapabilities, roomID } = data;
             const transport = consumerTransports.get(socket.id);
             if (!transport) throw new Error('Transport not found');
 
-            const producer = producers.get(data.socketID)?.get(producerID);
+            const producer = producers.get(socket_id)?.get(producer_id);
             if (!producer) throw new Error('Producer not found');
 
             const { consumer, params } = await createConsumer(producer, rtpCapabilities, transport);
 
-            consumer.on('transportclose', () => {
-                closeConsumer(consumer, socket.id);
-            });
-            consumer.on('producerclose', () => {
-                closeConsumer(consumer, socket.id);
-            });
+            consumer.on('transportclose', () => closeConsumer(consumer, socket.id));
+            consumer.on('producerclose', () => closeConsumer(consumer, socket.id));
 
             if (!consumers.has(socket.id)) consumers.set(socket.id, new Map());
-            consumers.get(socket.id).set(producerID, consumer);
+            consumers.get(socket.id).set(producer_id, consumer);
 
             callback(params);
         } catch (err) {
@@ -192,14 +181,11 @@ const registerMediasoupEvents = (socket) => {
         }
     });
 
-    socket.on('resume', async (data, callback) => {
-        const consumer = consumers.get(socket.id)?.get(data.producerID);
-        if (consumer) {
-            await consumer.resume();
-            callback();
-        } else {
-            callback({ error: 'Consumer not found' });
-        }
+    socket.on('resume', async ({ producer_id }, callback) => {
+        const consumer = consumers.get(socket.id)?.get(producer_id);
+        if (!consumer) return callback({ error: 'Consumer not found' });
+        await consumer.resume();
+        callback();
     });
 
     socket.on('join-meeting', async (data, callback) => {
