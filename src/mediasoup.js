@@ -1,9 +1,8 @@
 const { createWorker } = require('mediasoup');
 const { ipAddress, rtcPorts, mediaCodecs, rtcBitrates } = require("../hobbyland.config");
 const store = require('./store');
-const User = require('./models/user');
 const Meeting = require('./models/meeting');
-const { ObjectId } = require('mongoose').Types;
+// const User = require('./models/user');
 
 let worker;
 let mediasoupRouter;
@@ -228,33 +227,32 @@ const registerMediasoupEvents = (socket) => {
         }
     });
 
-    socket.on('leave', async (data, callback) => {
+    socket.on('leave-meeting', async (data, callback) => {
         try {
-            const { roomID } = data;
-            socket.leave(roomID || 'general');
+            const { room_id } = data;
+            socket.leave(room_id || 'general');
             await store.peers.asyncRemove({ socketID: socket.id }, { multi: true });
 
-            store.io.to(roomID || 'general').emit('leave', { socketID: socket.id });
+            store.io.to(room_id).emit('leave', { socketID: socket.id });
 
             if (producerTransports.has(socket.id)) producerTransports.get(socket.id).close();
             if (consumerTransports.has(socket.id)) consumerTransports.get(socket.id).close();
 
             store.roomIDs[socket.id] = null;
 
-            await Meeting.findOneAndUpdate(
-                { _id: roomID },
-                { lastLeave: Date.now(), $pull: { peers: socket.id } }
-            );
+            await Meeting.findByIdAndUpdate(room_id, {
+                last_leave: Date.now(),
+                $pull: { peers: socket.id }
+            });
 
-            if (store.consumerUserIDs[roomID])
-                store.consumerUserIDs[roomID].splice(store.consumerUserIDs[roomID].indexOf(socket.id), 1);
+            if (store.consumerUserIDs[room_id]) store.consumerUserIDs[room_id].splice(store.consumerUserIDs[room_id].indexOf(socket.id), 1);
 
-            socket.to(roomID).emit('consumers', { content: store.consumerUserIDs[roomID], timestamp: Date.now() });
-            socket.to(roomID).emit('leave', { socketID: socket.id });
+            socket.to(room_id).emit('consumers', { content: store.consumerUserIDs[room_id], timestamp: Date.now() });
+            socket.to(room_id).emit('leave', { socketID: socket.id });
 
-            store.onlineUsers.delete(socket);
-            store.onlineUsers.set(socket, { id: socket.user.id, status: 'online' });
-            store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
+            // store.onlineUsers.delete(socket);
+            // store.onlineUsers.set(socket, { id: socket.user.id, status: 'online' });
+            // store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
 
             callback();
         } catch (err) {
