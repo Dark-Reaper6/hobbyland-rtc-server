@@ -2,7 +2,7 @@ const { createWorker } = require('mediasoup');
 const { ipAddress, rtcPorts, mediaCodecs, rtcBitrates } = require("../hobbyland.config");
 const store = require('./store');
 const Meeting = require('./models/meeting');
-// const User = require('./models/user');
+const Room = require('./models/room');
 
 let worker;
 let mediasoupRouter;
@@ -29,30 +29,47 @@ const initMediasoupWorker = async () => {
 };
 
 const createWebRtcTransport = async () => {
-    const transport = await mediasoupRouter.createWebRtcTransport({
-        listenInfos: [
-            { protocol: 'tcp', ...ipAddress },
-            { protocol: 'udp', ...ipAddress },
-        ],
-        initialAvailableOutgoingBitrate: rtcBitrates.initial,
-    });
-    try { await transport.setMaxIncomingBitrate(rtcBitrates.max) } catch (error) { console.log(error) }
-    return {
-        transport,
-        params: {
-            id: transport.id,
-            iceParameters: transport.iceParameters,
-            iceCandidates: transport.iceCandidates,
-            dtlsParameters: transport.dtlsParameters
-        }
-    };
+    try {
+        const transport = await mediasoupRouter.createWebRtcTransport({
+            listenInfos: [
+                { protocol: 'tcp', ...ipAddress },
+                { protocol: 'udp', ...ipAddress },
+            ],
+            initialAvailableOutgoingBitrate: rtcBitrates.initial,
+        });
+        await transport.setMaxIncomingBitrate(rtcBitrates.max)
+        return {
+            transport,
+            params: {
+                id: transport.id,
+                iceParameters: transport.iceParameters,
+                iceCandidates: transport.iceCandidates,
+                dtlsParameters: transport.dtlsParameters
+            }
+        };
+    } catch (error) { console.log(error) }
 }
 
-async function createConsumer(producer, rtpCapabilities, consumerTransport) {
+const closeProducer = (producer, socketId) => {
+    producer.close();
+    producers.get(socketId)?.delete(producer.id);
+    if (producers.get(socketId)?.size === 0) producers.delete(socketId);
+    console.log("\nA producer has been closed with socket id : " + socketId);
+};
+
+const closeConsumer = (consumer, socketId) => {
+    consumer.close();
+    consumers.get(socketId)?.delete(consumer.id);
+    if (consumers.get(socketId)?.size === 0) consumers.delete(socketId);
+    console.log("\nA consumer has been closed with socket id : " + socketId);
+};
+
+const createConsumer = async (producer, rtpCapabilities, consumerTransport) => {
     if (!mediasoupRouter.canConsume({
         producerId: producer.id,
-        rtpCapabilities,
-    })) return console.error('cannot consume');
+        rtpCapabilities
+    })) throw new Error("Router cannot consume the media.");
+
     let consumer;
     try {
         consumer = await consumerTransport.consume({
@@ -66,7 +83,7 @@ async function createConsumer(producer, rtpCapabilities, consumerTransport) {
 
     return {
         consumer,
-        response: {
+        params: {
             producerId: producer.id,
             id: consumer.id,
             kind: consumer.kind,
@@ -83,6 +100,7 @@ const registerMediasoupEvents = (socket) => {
     });
 
     socket.on('create-producer-transport', async (_, callback) => {
+        console.log("create-producer-transport event got called.")
         try {
             const { transport, params } = await createWebRtcTransport();
             producerTransports.set(socket.id, transport);
@@ -94,6 +112,7 @@ const registerMediasoupEvents = (socket) => {
     });
 
     socket.on('create-consumer-transport', async (_, callback) => {
+        console.log("create-consumer-transport event got called.")
         try {
             const { transport, params } = await createWebRtcTransport();
             consumerTransports.set(socket.id, transport);
@@ -105,19 +124,19 @@ const registerMediasoupEvents = (socket) => {
     });
 
     socket.on('connect-producer-transport', async ({ dtlsParameters }, callback) => {
+        console.log("connect-producer-transport event got called.")
         const transport = producerTransports.get(socket.id);
         if (transport) {
             await transport.connect({ dtlsParameters });
             callback();
-        } else {
-            callback({ error: 'Transport not found' });
-        }
+        } else { callback({ error: 'Transport not found' }) }
     });
 
-    socket.on('connect-consumer-transport', async (data, callback) => {
-        const transport = consumerTransports.get(socket.id);
+    socket.on('connect-consumer-transport', async ({ dtlsParameters }, callback) => {
+        console.log("connect-consumer-transport event got called.")
+        const transport = await consumerTransports.get(socket.id);
         if (transport) {
-            await transport.connect({ dtlsParameters: data.dtlsParameters });
+            await transport.connect({ dtlsParameters });
             callback();
         } else { callback({ error: 'Transport not found' }) }
     });
@@ -133,11 +152,11 @@ const registerMediasoupEvents = (socket) => {
 
             await store.peers.asyncInsert({
                 type: 'producer',
-                socketID: socket.id,
-                userID: socket.user.id,
-                room_id,
+                socket_id: socket.id,
+                user_id: socket.user.id,
                 producerID: producer.id,
-                isScreen,
+                room_id,
+                isScreen
             });
 
             if (!producers.has(socket.id)) producers.set(socket.id, new Map());
@@ -145,10 +164,10 @@ const registerMediasoupEvents = (socket) => {
 
             socket.to(room_id).emit('new-producer', {
                 room_id,
-                socketID: socket.id,
-                userID: socket.user.id,
+                socket_id: socket.id,
+                user_id: socket.user.id,
                 producerID: producer.id,
-                isScreen,
+                isScreen
             });
             callback({ id: producer.id });
         } catch (err) {
@@ -159,10 +178,10 @@ const registerMediasoupEvents = (socket) => {
 
     socket.on('consume', async ({ producer_id, rtpCapabilities, socket_id }, callback) => {
         try {
-            const transport = consumerTransports.get(socket.id);
+            const transport = await consumerTransports.get(socket.id);
             if (!transport) throw new Error('Transport not found');
 
-            const producer = producers.get(socket_id)?.get(producer_id);
+            const producer = await producers.get(socket_id)?.get(producer_id);
             if (!producer) throw new Error('Producer not found');
 
             const { consumer, params } = await createConsumer(producer, rtpCapabilities, transport);
@@ -197,25 +216,21 @@ const registerMediasoupEvents = (socket) => {
                 [socket.id]: socket.user
             });
 
-            const peers = await store.peers.asyncFind({ type: 'producer', room_id: room_id || 'general' });
+            const peers = await store.peers.asyncFind({ type: 'producer', room_id });
 
             if (!store.consumerUserIDs[room_id]) store.consumerUserIDs[room_id] = [];
             store.consumerUserIDs[room_id].push(socket.id);
 
-            socket.to(room_id).emit('newPeer', socket.user);
+            socket.to(room_id).emit('new-peer', { socket_id: socket.id, user: socket.user });
             socket.to(room_id).emit('consumers', { content: store.consumerUserIDs[room_id], timestamp: Date.now() });
 
             await Meeting.findByIdAndUpdate(room_id, {
                 last_enter: Date.now(),
                 $push: { peers: socket.id },
-                $push: { users: socket.user.id },
+                $push: { users: socket.user.id }
             });
 
             store.roomIDs[socket.id] = room_id;
-            // store.onlineUsers.delete(socket);
-            // store.onlineUsers.set(socket, { id: socket.user.id, status: 'busy' });
-            // store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
-
             callback({
                 producers: peers,
                 consumers: { content: store.consumerUserIDs[room_id], timestamp: Date.now() },
@@ -231,7 +246,7 @@ const registerMediasoupEvents = (socket) => {
         try {
             const { room_id } = data;
             socket.leave(room_id || 'general');
-            await store.peers.asyncRemove({ socketID: socket.id }, { multi: true });
+            await store.peers.asyncRemove({ socket_id: socket.id }, { multi: true });
 
             store.io.to(room_id).emit('leave', { socketID: socket.id });
 
@@ -250,10 +265,6 @@ const registerMediasoupEvents = (socket) => {
             socket.to(room_id).emit('consumers', { content: store.consumerUserIDs[room_id], timestamp: Date.now() });
             socket.to(room_id).emit('leave', { socketID: socket.id });
 
-            // store.onlineUsers.delete(socket);
-            // store.onlineUsers.set(socket, { id: socket.user.id, status: 'online' });
-            // store.io.emit('onlineUsers', Array.from(store.onlineUsers.values()));
-
             callback();
         } catch (err) {
             console.error(err);
@@ -264,7 +275,7 @@ const registerMediasoupEvents = (socket) => {
     socket.on('remove', async (data, callback) => {
         try {
             await store.peers.asyncRemove({ producerID: data.producerID }, { multi: true });
-            store.io.to(data.roomID || 'general').emit('remove', { producerID: data.producerID, socketID: socket.id });
+            store.io.to(data.room_id).emit('remove', { producerID: data.producerID, socket_id: socket.id });
             callback();
         } catch (err) {
             console.error(err);
@@ -272,24 +283,19 @@ const registerMediasoupEvents = (socket) => {
         }
     });
 
-    socket.on("testing-event", (_, callback) => {
-        console.log("Yooo the promisified version of the socket io works like hell!!")
-        callback({
-            some: "kind of string here"
-        });
+    socket.on("call-user", async ({ room_id }, callback) => {
+        const room = await Room.findById(room_id).populate({
+            path: "members",
+            select: "_id username email profile_image firstname lastname"
+        }).lean();
+
+        // const isCalleeOnline = store.io.sockets.sockets.has(room.members.find(member => member._id.toString() !== socket.user.id));
+        // if (!room.is_group && !isCalleeOnline) return callback({ error: "User is not online" });
+
+        const caller = room.members.find(member => member._id.toString() === socket.user.id);
+        room.members.forEach(memeber => store.io.to(memeber._id.toString()).emit("incoming-call", { room, caller }));
+        callback({ success: true });
     })
-};
-
-const closeProducer = (producer, socketId) => {
-    producer.close();
-    producers.get(socketId)?.delete(producer.id);
-    if (producers.get(socketId)?.size === 0) producers.delete(socketId);
-};
-
-const closeConsumer = (consumer, socketId) => {
-    consumer.close();
-    consumers.get(socketId)?.delete(consumer.id);
-    if (consumers.get(socketId)?.size === 0) consumers.delete(socketId);
 };
 
 module.exports = {

@@ -34,7 +34,7 @@ module.exports = async (server) => {
 
     store.io.on('connection', async (socket) => {
         const { user } = socket;
-        console.log(`Socket connected: ${user}`);
+        console.log(`Socket connected: ${user.id}`);
         socket.join(user.id);
         socket.join(user.session_id);
 

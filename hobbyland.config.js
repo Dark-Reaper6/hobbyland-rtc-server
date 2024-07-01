@@ -30,7 +30,8 @@ const docsVerificStatuses = ["pending", "verified", "unverified"];
 
 const ipAddress = {
     ip: '0.0.0.0',
-    announcedIp: process.env.APP_MODE === 'DEV' ? "127.0.0.1" : process.env.HOST,
+    // announcedIp: process.env.APP_MODE === 'DEV' ? "127.0.0.1" : process.env.HOST,
+    announcedIp: null,
 };
 const mediaCodecs = [
     {
